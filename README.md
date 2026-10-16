@@ -185,6 +185,232 @@ The comparison will consider convergence speed, communication accuracy, stabilit
 
 ---
 
+## Mathematical Foundations
+
+Our project models communication between two neural agents as a differentiable learning problem. The Sender converts an object into a discrete message, and the Receiver uses that message to identify the intended object.
+
+### 1. Referential Game
+
+Let an object be represented by a feature vector:
+
+\[
+x = [x_{\text{colour}}, x_{\text{shape}}, x_{\text{size}}]
+\]
+
+The Sender observes a target object \(x\), while the Receiver receives a candidate set:
+
+\[
+C = \{x_1, x_2, \ldots, x_N\}
+\]
+
+The goal is to maximise the probability that the Receiver selects the intended target.
+
+### 2. Sender Network
+
+The Sender is a neural network parameterised by \(\theta_S\). It encodes the object and generates a probability distribution over a vocabulary of \(K\) symbols.
+
+\[
+h_S = f_{\theta_S}(x)
+\]
+
+\[
+p_S(m_t \mid x)
+= \operatorname{softmax}(W_Sh_S+b_S)
+\]
+
+The Sender produces a message of length \(L\):
+
+\[
+m = [m_1,m_2,\ldots,m_L]
+\]
+
+For example:
+
+```text
+Target object: Red Circle
+Generated message: [2, 0, 3]
+```
+
+The symbols have no predefined meanings. Their usage emerges through training.
+
+### 3. Gumbel-Softmax
+
+Discrete sampling is not directly differentiable, making standard backpropagation through sampled messages difficult. We use Gumbel-Softmax as a differentiable relaxation of categorical sampling.
+
+First, sample Gumbel noise:
+
+\[
+g_i=-\log(-\log u_i),
+\qquad u_i\sim U(0,1)
+\]
+
+Then compute:
+
+\[
+y_i=
+\frac{\exp((a_i+g_i)/\tau)}
+{\sum_{j=1}^{K}\exp((a_j+g_j)/\tau)}
+\]
+
+where:
+
+- \(a_i\) is the logit for symbol \(i\).
+- \(g_i\) is the sampled Gumbel noise.
+- \(\tau\) is the temperature parameter.
+- \(y_i\) is the relaxed probability assigned to symbol \(i\).
+
+A lower temperature produces more concentrated distributions. A straight-through estimator can use hard one-hot symbols in the forward pass while using relaxed gradients in the backward pass.
+
+### 4. Receiver Network
+
+The Receiver encodes the message and candidate objects, then computes a compatibility score for each candidate.
+
+\[
+h_m=f_{\theta_R}^{\text{msg}}(m)
+\]
+
+\[
+h_i=f_{\theta_R}^{\text{obj}}(x_i)
+\]
+
+One possible scoring function is:
+
+\[
+s_i=h_m^\top h_i
+\]
+
+The Receiver converts the scores into a probability distribution:
+
+\[
+P(i\mid m,C)=
+\frac{\exp(s_i)}
+{\sum_{j=1}^{N}\exp(s_j)}
+\]
+
+The candidate with the highest probability is selected as the predicted target.
+
+### 5. Training Objective
+
+Let \(y\) denote the index of the correct candidate. We train the agents using cross-entropy loss:
+
+\[
+\boxed{
+\mathcal L_{\text{task}}
+=-\log P(y\mid m,C)
+}
+\]
+
+A correct candidate assigned a high probability receives a lower loss. An incorrect or low-confidence prediction receives a higher loss.
+
+The model parameters are updated using gradient-based optimisation:
+
+\[
+\theta_S \leftarrow
+\theta_S-\eta\nabla_{\theta_S}\mathcal L_{\text{task}}
+\]
+
+\[
+\theta_R \leftarrow
+\theta_R-\eta\nabla_{\theta_R}\mathcal L_{\text{task}}
+\]
+
+where \(\eta\) is the learning rate.
+
+Gumbel-Softmax allows an approximate gradient to propagate through the discrete communication channel, helping the Sender learn messages that improve the Receiver's predictions.
+
+### 6. Measuring Compositionality
+
+A language is compositional when reusable components of a message systematically correspond to reusable attributes or concepts.
+
+Consider this hypothetical protocol:
+
+| Object | Message |
+|---|---|
+| Red circle | `A X` |
+| Red square | `A Y` |
+| Blue circle | `B X` |
+| Blue square | `B Y` |
+
+Here, the first symbol represents colour and the second represents shape. The protocol reuses components across different objects.
+
+However, communication accuracy alone cannot establish compositionality. An arbitrary code can also achieve perfect accuracy on familiar objects.
+
+### 7. Topographic Similarity
+
+Topographic similarity measures the relationship between distances in object space and distances in message space.
+
+For categorical object attributes, Hamming distance can be defined as:
+
+\[
+d_X(x_i,x_j)=
+\sum_{k=1}^{F}
+\mathbf{1}[x_{ik}\ne x_{jk}]
+\]
+
+For fixed-length messages:
+
+\[
+d_M(m_i,m_j)=
+\sum_{t=1}^{L}
+\mathbf{1}[m_{it}\ne m_{jt}]
+\]
+
+We calculate pairwise distances and correlate the two sets using Spearman's rank correlation:
+
+\[
+\boxed{
+\rho_{\text{topo}}=
+\operatorname{Spearman}
+\left(
+\{d_X(x_i,x_j)\}_{i<j},
+\{d_M(m_i,m_j)\}_{i<j}
+\right)
+}
+\]
+
+A higher positive correlation indicates that more dissimilar objects tend to have more dissimilar messages. This is evidence of systematic structure, but not definitive proof of compositionality.
+
+### 8. Generalisation to Unseen Combinations
+
+We will hold out selected combinations of object attributes during training and evaluate the agents on those combinations after training.
+
+\[
+\text{Generalisation Accuracy}
+=
+\frac{\text{Correct held-out predictions}}
+{\text{Total held-out games}}
+\]
+
+This tests whether the agents can communicate about novel combinations of familiar attributes rather than merely memorising individual objects.
+
+### 9. Information-Theoretic Perspective
+
+Let \(X\) denote the target object and \(M\) the generated message. Mutual information measures how much observing the message reduces uncertainty about the target:
+
+\[
+\boxed{
+I(X;M)=H(X)-H(X\mid M)
+}
+\]
+
+Here, \(H(X)\) is the entropy of the target distribution and \(H(X\mid M)\) is the remaining uncertainty after observing the message.
+
+High mutual information indicates that messages carry information about objects, but it does not necessarily imply compositionality. An arbitrary code can also encode substantial information.
+
+### Summary
+
+Our mathematical framework combines:
+
+- **Neural networks** to generate and interpret messages.
+- **Gumbel-Softmax** to enable gradient-based learning through discrete symbols.
+- **Cross-entropy loss** to optimise communication accuracy.
+- **Topographic similarity** to analyse the structure of the learned protocol.
+- **Held-out evaluation** to test generalisation to unseen attribute combinations.
+- **Information theory** to quantify the information messages carry about intended objects.
+
+The central research question is whether successful communication leads to a structured, compositional language or merely an arbitrary code.
+
+
 ## Evaluation Metrics
 
 High communication accuracy alone does not establish that a language is compositional. We will use multiple complementary metrics.
